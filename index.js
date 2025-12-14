@@ -82,6 +82,10 @@ app.post("/webhook/gmail", (req, res) => {
   console.log("Decoded Message: ", decodedMessage);
 });
 
+app.get("/hello", (req, res) => {
+  res.send("Hello World from the server");
+});
+
 app.listen(PORT, () => {
   console.log("Server is running on port", PORT);
 });
