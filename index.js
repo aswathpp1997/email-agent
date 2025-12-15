@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 
 const passport = require("passport");
 const { Strategy: GoogleStrategy } = require("passport-google-oauth20");
+const axios = require("axios");
 
 const PORT = process.env.PORT;
 const app = express();
@@ -80,6 +81,100 @@ app.post("/webhook/gmail", (req, res) => {
     Buffer.from(encodedMessage, "base64").toString("utf-8")
   );
   console.log("Decoded Message: ", decodedMessage);
+
+  const historyId = decodedMessage.historyId;
+  if (!historyId) {
+    console.log("No historyId in decoded message");
+    return;
+  }
+
+  const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+  if (!ACCESS_TOKEN) {
+    console.log("Missing ACCESS_TOKEN in env");
+    return;
+  }
+
+  const authHeaders = { Authorization: `Bearer ${ACCESS_TOKEN}` };
+
+  // Helper to decode base64url bodies
+  const decodeBody = (data) => {
+    if (!data) return "";
+    const padded = data + "=".repeat((4 - (data.length % 4)) % 4);
+    try {
+      return Buffer.from(padded, "base64").toString("utf-8");
+    } catch {
+      return "";
+    }
+  };
+
+  const extractText = (payload) => {
+    if (!payload) return "";
+    const parts = payload.parts || [];
+    const body = payload.body;
+    if (body && body.data) return decodeBody(body.data);
+    const texts = [];
+    for (const part of parts) {
+      if (part.mimeType && part.mimeType.startsWith("text/plain")) {
+        const data = part.body?.data;
+        if (data) texts.push(decodeBody(data));
+      }
+      if (part.parts) {
+        const nested = extractText(part);
+        if (nested) texts.push(nested);
+      }
+    }
+    return texts.join("\n");
+  };
+
+  const fetchMessage = async (id) => {
+    try {
+      const resp = await axios.get(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`,
+        { params: { format: "full" }, headers: authHeaders }
+      );
+      return resp.data;
+    } catch (err) {
+      console.log("Failed to fetch message", id, err.response?.status, err.message);
+      return null;
+    }
+  };
+
+  const fetchHistory = async () => {
+    try {
+      const resp = await axios.get(
+        "https://gmail.googleapis.com/gmail/v1/users/me/history",
+        {
+          params: {
+            startHistoryId: historyId,
+            historyTypes: "messageAdded",
+          },
+          headers: authHeaders,
+        }
+      );
+      return resp.data.history || [];
+    } catch (err) {
+      console.log("Failed to fetch history", err.response?.status, err.message);
+      return [];
+    }
+  };
+
+  (async () => {
+    const history = await fetchHistory();
+    for (const entry of history) {
+      for (const added of entry.messagesAdded || []) {
+        const msgId = added.message?.id;
+        if (!msgId) continue;
+        const msg = await fetchMessage(msgId);
+        if (!msg) continue;
+        const subject =
+          (msg.payload?.headers || []).find(
+            (h) => (h.name || "").toLowerCase() === "subject"
+          )?.value || "";
+        const bodyText = extractText(msg.payload) || msg.snippet || "";
+        console.log("Fetched email:", { subject, body: bodyText, id: msgId });
+      }
+    }
+  })();
 });
 
 app.get("/hello", (req, res) => {
